@@ -68,6 +68,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         images: Optional[torch.FloatTensor] = None,
         image_sizes: Optional[List[List[int]]] = None,
         return_dict: Optional[bool] = None,
+        **kwargs    # 接收意外的参数
     ) -> Union[Tuple, CausalLMOutputWithPast]:
 
         if inputs_embeds is None:
