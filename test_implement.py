@@ -28,6 +28,7 @@ attention_monitor = AttentionMonitor(
     model=model,
     model_layers=model.model.layers,
     layer_id_list=[31],
+    tokenizer=tokenizer,
 )
 attention_monitor.apply_attention_hooks()
 attention_monitor.apply_generate_hook()

@@ -1,12 +1,12 @@
 import torch
-
 import transformers
 from typing import Any, Literal, Optional, Sequence, cast, overload, Tuple
 from functools import partial
-
 from .typing_mm import (
     Model,
-) 
+)
+from patchs_for_model.llava import prepare_inputs_image_position_mask_for_multimodal
+
 """
     NOTE
     Attention Monitor for LVLMs, which can be used to get and visualize the attention matrix of selected layer 
@@ -18,12 +18,14 @@ from .typing_mm import (
 """
 
 class AttentionMonitor:
-    def __init__(self, model, model_layers, layer_id_list):
+    def __init__(self, model, model_layers, layer_id_list, tokenizer):
         self.model = model
         self.model_layers = model_layers
         self.layer_id_list = layer_id_list
+        self.tokenizer = tokenizer
+
         self.attention_matrices = {layer_id: [] for layer_id in layer_id_list}
-        self.generate_inputs = []  # 用于存储 generate 的输入参数
+        self.image_position_masks = [] # 用于存储推理时每个 batch 的 image position mask
         self.hook_handles = []  # 用于存储注册的 hook 的句柄，以便后续移除
         self.generate_hook_handle = None # 用于存储 generate hook 的句柄
         self.original_generate = None # 用于存储原始的 generate 方法，以便后续恢复
@@ -71,6 +73,10 @@ class AttentionMonitor:
             )
             self.hook_handles.append(registered_attention_hook)
 
+    """
+        NOTE
+        移除 attention_hook 以及 generate_hook
+    """
     def remove_hooks(self):
         for handle in self.hook_handles:
             handle.remove()
@@ -83,13 +89,23 @@ class AttentionMonitor:
         Hook function to capture input parameters from model.generate()
         This captures both positional and keyword arguments passed to generate
         """
-        # Store the inputs for later analysis
-        self.generate_inputs.append({
-            'args': args,
-            'kwargs': kwargs
-        })
-        # You can also log or print the inputs here if needed
-        # print(f"Generate called with args: {args}, kwargs keys: {kwargs.keys() if kwargs else None}")
+        input_ids = args[0].clone()
+        images = kwargs['images'].clone()
+        # Create attention_mask: True for non-pad tokens, False for pad tokens
+        attention_mask = (input_ids != self.tokenizer.pad_token_id)
+        
+        _, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels, image_position_mask = prepare_inputs_image_position_mask_for_multimodal(
+            self=self.model,
+            input_ids=input_ids,
+            position_ids=None,
+            attention_mask=attention_mask,
+            past_key_values=None,
+            labels=None,
+            images=images,
+        )
+        self.image_position_masks.append(image_position_mask.detach().cpu())
+
+
 
     def apply_generate_hook(self):
         """
@@ -114,9 +130,3 @@ class AttentionMonitor:
             self.model.generate = self.original_generate 
 
     
-
-
-    
-    
-
-        
