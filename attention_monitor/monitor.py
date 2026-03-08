@@ -2,6 +2,9 @@ import torch
 import transformers
 from typing import Any, Literal, Optional, Sequence, cast, overload, Tuple
 from functools import partial
+import os
+import json
+import uuid
 from .typing_mm import (
     Model,
 )
@@ -128,5 +131,140 @@ class AttentionMonitor:
         """
         if hasattr(self.model, 'generate') and callable(self.model.generate):
             self.model.generate = self.original_generate 
-
     
+    def statistic_and_visualize(self):
+        """
+        NOTE
+        统计并可视化 attention matrix 的函数，功能如下:
+        1. 基于注意力分数矩阵统计记录的层数的不同模态的注意力总分（贡献）
+        2. 从 image patch 尺度上可视化记录的层数的各个视觉token的注意力分数
+        """
+
+        # 1. 数据验证
+        if not self.attention_matrices or not self.image_position_masks:
+            raise ValueError("No attention matrices or image position masks found. Please run inference first.")
+
+        # 2. 初始化统计结果存储结构
+        # 结构: {layer_id: {'vision_to_vision': [], 'vision_to_text': [], 'text_to_vision': [], 'text_to_text': []}}
+        statistics = {layer_id: {
+            'vision_to_vision': [],
+            'vision_to_text': [],
+            'text_to_vision': [],
+            'text_to_text': []
+        } for layer_id in self.layer_id_list}
+
+        # 3. 遍历所有层
+        for layer_id in self.layer_id_list:
+            layer_attention_matrices = self.attention_matrices[layer_id]
+
+            # 遍历每个batch的注意力矩阵
+            for batch_idx, attention_matrix in enumerate(layer_attention_matrices):
+                # attention_matrix shape: (bs, attn_head, seq_len, seq_len)
+                bs, num_heads, seq_len, _ = attention_matrix.shape
+
+                # 获取对应的image position mask
+                if batch_idx >= len(self.image_position_masks):
+                    continue
+
+                image_position_mask = self.image_position_masks[batch_idx]  # shape: (bs, seq_len)
+
+                # 处理每个batch中的每个样本
+                for sample_idx in range(bs):
+                    sample_attention = attention_matrix[sample_idx]  # shape: (num_heads, seq_len, seq_len)
+                    sample_image_mask = image_position_mask[sample_idx]  # shape: (seq_len,)
+
+                    # 创建文本token的掩码
+                    text_mask = ~sample_image_mask
+
+                    # 获取视觉和文本token的索引
+                    vision_indices = torch.where(sample_image_mask)[0]
+                    text_indices = torch.where(text_mask)[0]
+
+                    # 如果没有视觉或文本token，跳过
+                    has_vision = len(vision_indices) > 0
+                    has_text = len(text_indices) > 0
+                    if not has_vision or not has_text:
+                        continue
+
+                    # 计算每种注意力模式的平均分数（对每个头分别计算）
+                    head_avg_scores = {
+                        'vision_to_vision': [],
+                        'vision_to_text': [],
+                        'text_to_vision': [],
+                        'text_to_text': []
+                    }
+
+                    for head_idx in range(num_heads):
+                        head_attention = sample_attention[head_idx]  # shape: (seq_len, seq_len)
+
+                        # 1. vision → vision
+                        if has_vision:
+                            v2v_attention = head_attention[vision_indices][:, vision_indices]
+                            v2v_sum = v2v_attention.sum().item() if v2v_attention.numel() > 0 else 0.0
+                            head_avg_scores['vision_to_vision'].append(v2v_sum)
+
+                        # 2. vision → text
+                        if has_vision and has_text:
+                            v2t_attention = head_attention[vision_indices][:, text_indices]
+                            v2t_sum = v2t_attention.sum().item() if v2t_attention.numel() > 0 else 0.0
+                            head_avg_scores['vision_to_text'].append(v2t_sum)
+
+                        # 3. text → vision
+                        if has_text and has_vision:
+                            t2v_attention = head_attention[text_indices][:, vision_indices]
+                            t2v_sum = t2v_attention.sum().item() if t2v_attention.numel() > 0 else 0.0
+                            head_avg_scores['text_to_vision'].append(t2v_sum)
+
+                        # 4. text → text
+                        if has_text:
+                            t2t_attention = head_attention[text_indices][:, text_indices]
+                            t2t_sum = t2t_attention.sum().item() if t2t_attention.numel() > 0 else 0.0
+                            head_avg_scores['text_to_text'].append(t2t_sum)
+
+                    # 对所有头取平均
+                    statistics[layer_id]['vision_to_vision'].append(
+                        sum(head_avg_scores['vision_to_vision']) / num_heads if head_avg_scores['vision_to_vision'] else 0.0
+                    )
+                    statistics[layer_id]['vision_to_text'].append(
+                        sum(head_avg_scores['vision_to_text']) / num_heads if head_avg_scores['vision_to_text'] else 0.0
+                    )
+                    statistics[layer_id]['text_to_vision'].append(
+                        sum(head_avg_scores['text_to_vision']) / num_heads if head_avg_scores['text_to_vision'] else 0.0
+                    )
+                    statistics[layer_id]['text_to_text'].append(
+                        sum(head_avg_scores['text_to_text']) / num_heads if head_avg_scores['text_to_text'] else 0.0
+                    )
+
+        # 4. 整理最终结果
+        # 转换为更友好的格式: {layer_id: {mode: [batch_scores]}}
+        final_statistics = {}
+        for layer_id in self.layer_id_list:
+            if layer_id not in final_statistics:
+                final_statistics[layer_id] = {}
+
+            for mode in ['vision_to_vision', 'vision_to_text', 'text_to_vision', 'text_to_text']:
+                scores = statistics[layer_id][mode]
+                final_statistics[layer_id][mode] = scores
+
+        # 打印统计信息
+        total_samples = sum(len(scores) for layer_stats in final_statistics.values() for scores in layer_stats.values()) // 4
+        print(f"Total samples processed: {total_samples}")
+
+        # 5. 保存结果到文件
+        # 创建结果文件夹
+        results_dir = "./results"
+        if not os.path.exists(results_dir):
+            os.makedirs(results_dir)
+
+        # 生成随机uid作为文件夹名称
+        uid = str(uuid.uuid4())
+        result_folder = os.path.join(results_dir, uid)
+        os.makedirs(result_folder)
+
+        # 保存统计信息到JSON文件
+        result_file = os.path.join(result_folder, "statistics.json")
+        with open(result_file, 'w', encoding='utf-8') as f:
+            json.dump(final_statistics, f, ensure_ascii=False, indent=2)
+
+        print(f"Results saved to: {result_folder}")
+        print(final_statistics)

@@ -10,7 +10,7 @@ from transformers import AutoTokenizer
 from attention_monitor.monitor import AttentionMonitor
 
 # Initialize pre-trained LlaVA MLLM
-model_path = "/s/models/llava-series/llava-v1.5-7b"
+model_path = "/d/data/llava-series/llava-v1.5-7b"
 device = "cuda:0"
 
 tokenizer, model, image_processor, context_len = load_pretrained_model(
@@ -36,7 +36,7 @@ attention_monitor.apply_generate_hook()
 from datasets import load_dataset
 dataset = load_dataset(
     "parquet",
-    data_files="/home/lsy/shared_data/MME/data/*.parquet",
+    data_files="/d/data/MME/data/*.parquet",
     split="train"
 )
 
@@ -58,8 +58,12 @@ with torch.inference_mode():
                 image_sizes=image.size,
                 temperature=0,
                 max_new_tokens=128,
-                use_cache=True)
+                use_cache=True,
+                output_attentions=True,)
 outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
+
+# statistic and visualize
+attention_monitor.statistic_and_visualize()
 
 # 卸载 hook 函数
 attention_monitor.remove_hooks()
