@@ -32,6 +32,7 @@ class AttentionMonitor:
         self.hook_handles = []  # 用于存储注册的 hook 的句柄，以便后续移除
         self.generate_hook_handle = None # 用于存储 generate hook 的句柄
         self.original_generate = None # 用于存储原始的 generate 方法，以便后续恢复
+        self.vision_token_attention_scores = {layer_id: [] for layer_id in layer_id_list} # 用于存储每个层的视觉token的注意力分数，值为列表
 
     def attention_hook(self, 
                        module: torch.nn.Module, 
@@ -140,6 +141,10 @@ class AttentionMonitor:
         2. 从 image patch 尺度上可视化记录的层数的各个视觉token的注意力分数
         """
 
+        """
+        PART A
+        Statistical analysis of attention score contributions from different modalities
+        """
         # 1. 数据验证
         if not self.attention_matrices or not self.image_position_masks:
             raise ValueError("No attention matrices or image position masks found. Please run inference first.")
@@ -221,7 +226,7 @@ class AttentionMonitor:
                             t2t_sum = t2t_attention.sum().item() if t2t_attention.numel() > 0 else 0.0
                             head_avg_scores['text_to_text'].append(t2t_sum)
 
-                    # 对所有头取平均
+                    # 对所有注意力头取平均
                     statistics[layer_id]['vision_to_vision'].append(
                         sum(head_avg_scores['vision_to_vision']) / num_heads if head_avg_scores['vision_to_vision'] else 0.0
                     )
@@ -250,6 +255,56 @@ class AttentionMonitor:
         total_samples = sum(len(scores) for layer_stats in final_statistics.values() for scores in layer_stats.values()) // 4
         print(f"Total samples processed: {total_samples}")
 
+        # 初始化汇总统计信息
+        # 结构: {layer_id: {'vision_to_vision': total_score, 'vision_to_text': total_score, ...}}
+        summary_stats = {
+            layer_id: {
+                'vision_to_vision': 0.0,
+                'vision_to_text': 0.0,
+                'text_to_vision': 0.0,
+                'text_to_text': 0.0,
+                'text_modality': 0.0,
+                'vision_modality': 0.0
+            }
+            for layer_id in self.layer_id_list
+        }
+
+        # 在各层各个模式中计算所有样例上的注意力总分
+        for layer_id, layer_stats in final_statistics.items():
+            print(f"Layer {layer_id}:")
+
+            for mode, scores in layer_stats.items():
+                mode_total = sum(scores)
+                mode_avg = mode_total / len(scores) if scores else 0.0
+                mode_max = max(scores) if scores else 0.0
+                mode_min = min(scores) if scores else 0.0
+
+                print(f"  {mode}:")
+                print(f"    Total Attention Score = {mode_total:.4f} over {len(scores)} samples")
+                print(f"    Average Score = {mode_avg:.4f}")
+                print(f"    Max Score = {mode_max:.4f}")
+                print(f"    Min Score = {mode_min:.4f}")
+
+                # 累加到该层的对应模式总分
+                summary_stats[layer_id][mode] = mode_total
+                summary_stats[layer_id]['text_modality'] = summary_stats[layer_id]['vision_to_text'] + summary_stats[layer_id]['text_to_text']
+                summary_stats[layer_id]['vision_modality'] = summary_stats[layer_id]['vision_to_vision'] + summary_stats[layer_id]['text_to_vision']
+
+        # 计算总体统计（跨所有层）
+        overall_totals = {
+            'vision_to_vision': sum(summary_stats[layer_id]['vision_to_vision'] for layer_id in self.layer_id_list),
+            'vision_to_text': sum(summary_stats[layer_id]['vision_to_text'] for layer_id in self.layer_id_list),
+            'text_to_vision': sum(summary_stats[layer_id]['text_to_vision'] for layer_id in self.layer_id_list),
+            'text_to_text': sum(summary_stats[layer_id]['text_to_text'] for layer_id in self.layer_id_list),
+            'text_modality': sum(summary_stats[layer_id]['text_modality'] for layer_id in self.layer_id_list),
+            'vision_modality': sum(summary_stats[layer_id]['vision_modality'] for layer_id in self.layer_id_list)
+        }
+
+        # 打印总体统计
+        print("\n=== OVERALL STATISTICS (ACROSS ALL LAYERS) ===")
+        for mode, total in overall_totals.items():
+            print(f"{mode}: Total = {total:.4f}")
+
         # 5. 保存结果到文件
         # 创建结果文件夹
         results_dir = "./results"
@@ -261,10 +316,37 @@ class AttentionMonitor:
         result_folder = os.path.join(results_dir, uid)
         os.makedirs(result_folder)
 
-        # 保存统计信息到JSON文件
-        result_file = os.path.join(result_folder, "statistics.json")
-        with open(result_file, 'w', encoding='utf-8') as f:
-            json.dump(final_statistics, f, ensure_ascii=False, indent=2)
+        # 保存详细的汇总统计信息到JSON文件
+        summary_file = os.path.join(result_folder, "summary_statistics.json")
+        with open(summary_file, 'w', encoding='utf-8') as f:
+            json.dump(summary_stats, f, ensure_ascii=False, indent=2)
+
+        # 保存更详细的统计信息（包含每个样本的原始分数）
+        detailed_stats = {
+            'summary': summary_stats,
+            'raw_data': final_statistics,
+            'metadata': {
+                'total_samples': total_samples,
+                'num_layers': len(self.layer_id_list),
+                'layer_ids': list(self.layer_id_list)
+            }
+        }
+        detailed_file = os.path.join(result_folder, "detailed_statistics.json")
+        with open(detailed_file, 'w', encoding='utf-8') as f:
+            json.dump(detailed_stats, f, ensure_ascii=False, indent=2)
 
         print(f"Results saved to: {result_folder}")
         print(final_statistics)
+    
+        """
+        TODO
+        PART B
+        基于 self.layer_id_list 中指定的层数、self.attention_matrices 中记录的 attention matrix 和
+        self.image_position_masks 中记录的 image position mask
+        可视化每个层数的 vision token 的注意力分数
+        """
+        
+        
+
+
+

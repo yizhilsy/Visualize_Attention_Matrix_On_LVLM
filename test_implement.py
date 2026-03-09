@@ -40,8 +40,8 @@ dataset = load_dataset(
     split="train"
 )
 
-question = DEFAULT_IMAGE_TOKEN + '\n' + dataset[2]['question']
-image = dataset[2]['image'].convert('RGB')
+question = [DEFAULT_IMAGE_TOKEN + '\n' + dataset[2]['question'], DEFAULT_IMAGE_TOKEN + '\n' + dataset[3]['question']]
+image = [dataset[2]['image'].convert('RGB'), dataset[3]['image'].convert('RGB')]
 conv = conv_templates['vicuna_v1'].copy()
 conv.append_message(conv.roles[0], question)
 conv.append_message(conv.roles[1], None)
