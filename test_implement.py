@@ -9,6 +9,9 @@ from transformers import AutoTokenizer
 
 from attention_monitor.monitor import AttentionMonitor
 
+import os
+os.makedirs("./test_image", exist_ok=True)
+
 # Initialize pre-trained LlaVA MLLM
 model_path = "/d/data/llava-series/llava-v1.5-7b"
 device = "cuda:0"
@@ -29,6 +32,7 @@ attention_monitor = AttentionMonitor(
     model_layers=model.model.layers,
     layer_id_list=[31],
     tokenizer=tokenizer,
+    image_processor=image_processor
 )
 attention_monitor.apply_attention_hooks()
 attention_monitor.apply_generate_hook()
@@ -40,8 +44,8 @@ dataset = load_dataset(
     split="train"
 )
 
-question = [DEFAULT_IMAGE_TOKEN + '\n' + dataset[2]['question'], DEFAULT_IMAGE_TOKEN + '\n' + dataset[3]['question']]
-image = [dataset[2]['image'].convert('RGB'), dataset[3]['image'].convert('RGB')]
+question = DEFAULT_IMAGE_TOKEN + '\n' + dataset[2]['question']
+image = dataset[2]['image'].convert('RGB')
 conv = conv_templates['vicuna_v1'].copy()
 conv.append_message(conv.roles[0], question)
 conv.append_message(conv.roles[1], None)
