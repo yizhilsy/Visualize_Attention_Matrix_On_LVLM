@@ -6,3 +6,11 @@ __pycache__
 data_loader.py
 
 GQA-Noise_attn_score_tpr.py
+
+results/
+
+layer32_results/
+
+attention_hook_GQA-Noise_llava-v1.5-7b_img_text_clean.jsonl
+attention_hook_GQA-Noise_llava-v1.5-7b_img_text_caption_noise.jsonl
+attention_hook_GQA-Noise_llava-v1.5-7b_img_text_vision_noise.jsonl
